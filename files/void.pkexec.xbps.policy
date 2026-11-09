@@ -5,18 +5,17 @@
 <policyconfig>
 
   <vendor>Neko Void Linux</vendor>
-  <vendor_url>https://github.com/ErzaGOD19/Neko-Update</vendor_url>
+  <vendor_url>https://github.com/ANOMALI0x00/Neko-Update</vendor_url>
 
   <action id="org.neko_void.updater.policy">
     <description>Neko Void Updater - Mantenimiento del Sistema</description>
     <message>Se requiere autenticación para aplicar actualizaciones o limpiar el sistema en Void Linux.</message>
     <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin</allow_active>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/neko-updater-core</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 
 </policyconfig>

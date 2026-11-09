@@ -12,21 +12,23 @@
 #include <QTranslator>
 #include <QLocale>
 #include <QMessageBox>
-#include <QDesktopServices>
-#include <QUrl>
 #include <QPixmap>
-#include <malloc.h>
+#include <memory>
 #include <unistd.h>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 class NekoTray : public QObject {
     Q_OBJECT
 public:
-    NekoTray() : isWorking(false) {
+    NekoTray() : isWorking(false), lastNotifiedCount(-1) {
+        loadIcons();
         createActions();
         createTrayIcon();
 
         watcher = new QFileSystemWatcher(this);
-        // Ensure file exists before watching
         QFile file("/tmp/neko_updates_count");
         if (!file.exists()) {
             if (file.open(QIODevice::WriteOnly)) {
@@ -37,30 +39,71 @@ public:
         watcher->addPath("/tmp/neko_updates_count");
         connect(watcher, &QFileSystemWatcher::fileChanged, this, &NekoTray::onFileChanged);
 
-        // Mantener la memoria del heap devuelta al sistema de forma periódica
-        // (la app corre como daemon en la bandeja durante días).
+        scheduledTimer = new QTimer(this);
+        connect(scheduledTimer, &QTimer::timeout, this, &NekoTray::triggerSilentCheck);
+
+#if defined(__GLIBC__)
         heapTimer = new QTimer(this);
-        connect(heapTimer, &QTimer::timeout, this, [this]() {
+        connect(heapTimer, &QTimer::timeout, this, []() {
             malloc_trim(0);
-            malloc_trim(1024 * 1024); // intentar liberar fragmentos >= 1MB
         });
-        heapTimer->start(15 * 60 * 1000); // cada 15 minutos
+        heapTimer->start(15 * 60 * 1000);
+#endif
 
         updateStatus();
         trayIcon->show();
-        malloc_trim(0); // Free startup memory
+
+        // Liberar heap inicial tras el renderizado de la bandeja
+        QTimer::singleShot(300, this, []() {
+#if defined(__GLIBC__)
+            malloc_trim(0);
+#endif
+        });
+    }
+
+    ~NekoTray() override {
+        delete trayMenu;
     }
 
 private slots:
     void onFileChanged(const QString &path) {
         Q_UNUSED(path);
-        // Re-add in case it was deleted and recreated
         if (!watcher->files().contains("/tmp/neko_updates_count")) {
             watcher->addPath("/tmp/neko_updates_count");
         }
         if (!isWorking) {
             updateStatus();
         }
+    }
+
+    QString findCoreBinary() {
+        if (QFile::exists("/usr/bin/neko-updater-core")) {
+            return "/usr/bin/neko-updater-core";
+        }
+        QString local = QApplication::applicationDirPath() + "/../neko-updater-core/target/release/neko-updater-core";
+        if (QFile::exists(local)) {
+            return local;
+        }
+        return "/usr/bin/neko-updater-core";
+    }
+
+    void triggerSilentCheck() {
+        if (isWorking) return;
+        isWorking = true;
+        updateStatus();
+
+        QProcess *process = new QProcess(this);
+        auto cleaned = std::make_shared<bool>(false);
+        auto cleanup = [this, process, cleaned]() {
+            if (*cleaned) return;
+            *cleaned = true;
+            isWorking = false;
+            updateStatus();
+            process->deleteLater();
+        };
+        connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, cleanup);
+        connect(process, &QProcess::errorOccurred, this, [cleanup](QProcess::ProcessError) { cleanup(); });
+        process->start(findCoreBinary(), QStringList());
     }
 
     void updateStatus() {
@@ -70,36 +113,44 @@ private slots:
             QTextStream in(&file);
             QString content = in.readAll().trimmed();
             if (!content.isEmpty()) {
-                count = content.toInt();
+                bool ok = false;
+                int val = content.toInt(&ok);
+                if (ok) {
+                    count = val;
+                }
             }
         }
 
-        QString iconPath = "/usr/share/neko-void/";
-        // Fallback for local testing
-        if (!QFile::exists(iconPath + "normal.png")) {
-            iconPath = "neko-updater-core/Data/";
-        }
-
         if (isWorking) {
-            trayIcon->setIcon(QIcon(iconPath + "working.png"));
+            trayIcon->setIcon(workingIcon);
             trayIcon->setToolTip(tr("Neko: Trabajando..."));
             statusAction->setText(tr("Estado: Trabajando..."));
         } else if (count > 0) {
-            trayIcon->setIcon(QIcon(iconPath + "warnig.png"));
+            trayIcon->setIcon(warningIcon);
             trayIcon->setToolTip(tr("Neko: %1 actualizaciones disponibles").arg(count));
             statusAction->setText(tr("Actualizaciones: %1").arg(count));
+
+            if (count != lastNotifiedCount) {
+                lastNotifiedCount = count;
+                trayIcon->showMessage(
+                    tr("Actualizaciones disponibles"),
+                    tr("Se encontraron %1 actualizaciones para tu sistema.").arg(count),
+                    warningIcon,
+                    5000
+                );
+            }
         } else if (count == 0) {
-            trayIcon->setIcon(QIcon(iconPath + "normal.png"));
+            lastNotifiedCount = 0;
+            trayIcon->setIcon(normalIcon);
             trayIcon->setToolTip(tr("Neko: Sistema actualizado"));
             statusAction->setText(tr("Sistema actualizado"));
         } else {
-            trayIcon->setIcon(QIcon(iconPath + "normal.png"));
+            trayIcon->setIcon(normalIcon);
             trayIcon->setToolTip(tr("Neko: Estado desconocido"));
             statusAction->setText(tr("Estado desconocido"));
         }
 
-        bool manual = false;
-        QString freq = "1d"; // default
+        QString freq = "1d";
         QFile conf(QDir::homePath() + "/.config/NekoVoid/Updater.conf");
         if (conf.open(QIODevice::ReadOnly | QIODevice::Text)) {
             QTextStream in(&conf);
@@ -107,7 +158,6 @@ private slots:
                 QString line = in.readLine().trimmed();
                 if (line.startsWith("frequency=")) {
                     freq = line.split("=").last();
-                    manual = (freq == "manual");
                 }
             }
         }
@@ -129,70 +179,130 @@ private slots:
             fman->setEnabled(freq != "manual");
         }
 
-        // Disable actions when working, or based on state
-        checkAction->setEnabled(!isWorking && manual);
+        applyTimerFrequency(freq);
+
+        checkAction->setEnabled(!isWorking);
         applyAction->setEnabled(!isWorking && count > 0);
         cleanAction->setEnabled(!isWorking);
-        malloc_trim(0); // Free memory back to OS
+
+#if defined(__GLIBC__)
+        malloc_trim(0);
+#endif
+    }
+
+    void applyTimerFrequency(const QString &freq) {
+        if (freq == "manual") {
+            scheduledTimer->stop();
+            return;
+        }
+        qint64 intervalMs = 24 * 3600 * 1000ULL; // 1d default
+        if (freq == "12h") intervalMs = 12 * 3600 * 1000ULL;
+        else if (freq == "3d") intervalMs = 3 * 24 * 3600 * 1000ULL;
+        else if (freq == "1w") intervalMs = 7 * 24 * 3600 * 1000ULL;
+
+        if (!scheduledTimer->isActive() || scheduledTimer->interval() != intervalMs) {
+            scheduledTimer->start(intervalMs);
+        }
     }
 
     QString findTerminal() {
-        // Terminales soportadas: alacritty, foot, mate-terminal, xfce4-terminal, st, kitty
-        QStringList terms = {"alacritty", "foot", "kitty", "mate-terminal", "xfce4-terminal", "st", "xterm"};
+        const char *envTerm = getenv("TERMINAL");
+        if (envTerm && strlen(envTerm) > 0) {
+            QString t = QString::fromUtf8(envTerm).trimmed();
+            if (QFile::exists(t)) return t;
+            if (QFile::exists("/usr/bin/" + t) || QFile::exists("/usr/local/bin/" + t)) {
+                return t;
+            }
+        }
+
+        static const QStringList terms = {
+            "alacritty", "foot", "kitty", "ghostty", "wezterm",
+            "konsole", "gnome-terminal", "xfce4-terminal",
+            "mate-terminal", "qterminal", "st", "xterm"
+        };
         for (const QString &t : terms) {
             if (QFile::exists("/usr/bin/" + t) || QFile::exists("/usr/local/bin/" + t)) {
                 return t;
             }
         }
-        return "";
+        return QString();
     }
 
-    void launchInTerminal(const QString &script, const QString &fallbackArg) {
+    void launchBashInTerminal(const QStringList &bashArgs, const QString &fallbackArg) {
         QProcess *process = new QProcess(this);
-        connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this, process]() {
+        auto cleaned = std::make_shared<bool>(false);
+        auto cleanup = [this, process, cleaned]() {
+            if (*cleaned) return;
+            *cleaned = true;
             isWorking = false;
             updateStatus();
             process->deleteLater();
-        });
+        };
+        connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, cleanup);
+        connect(process, &QProcess::errorOccurred, this, [cleanup](QProcess::ProcessError) { cleanup(); });
 
         QString termCmd = findTerminal();
         if (termCmd.isEmpty()) {
-            // Fallback sin terminal: ejecutar directamente
-            process->start("/usr/bin/neko-updater-core", {fallbackArg});
+            if (!fallbackArg.isEmpty()) {
+                QString escalator = "pkexec";
+                if (!QFile::exists("/usr/bin/pkexec")) {
+                    if (QFile::exists("/usr/bin/doas") && QFile::exists("/etc/doas.conf")) {
+                        escalator = "doas";
+                    } else if (QFile::exists("/usr/bin/sudo")) {
+                        escalator = "sudo";
+                    }
+                }
+                process->start(escalator, {findCoreBinary(), fallbackArg});
+            } else {
+                process->start(findCoreBinary(), QStringList());
+            }
             return;
         }
 
-        // Sintaxis por terminal:
-        //  - alacritty/kitty/foot/st/xterm: -e seguido de argv separados
-        //  - mate-terminal/xfce4-terminal: -e toma un UNICO string de comando
-        if (termCmd == "mate-terminal" || termCmd == "xfce4-terminal") {
-            process->start(termCmd, {"-e", "bash -lc \"" + script + "\""});
+        QStringList fullArgs;
+        if (termCmd.endsWith("gnome-terminal") || termCmd.endsWith("mate-terminal") || termCmd.endsWith("xfce4-terminal")) {
+            fullArgs << "--" << "bash";
         } else {
-            process->start(termCmd, {"-e", "bash", "-lc", script});
+            fullArgs << "-e" << "bash";
         }
+        fullArgs.append(bashArgs);
+        process->start(termCmd, fullArgs);
     }
 
     void runCoreCommand(const QString &arg) {
         if (isWorking) return;
+        // Validación estricta: solo permitir banderas autorizadas
+        if (arg != "--apply" && arg != "--clean") {
+            return;
+        }
         isWorking = true;
         updateStatus();
 
-        // Wrapper que eleva privilegios usando pkexec (Polkit), con doas/sudo como respaldo
-        QString script = QString(
-            "cmd='/usr/bin/neko-updater-core %1'; "
+        QString core = findCoreBinary();
+        static const char *script =
+            "CORE=\"$1\"; ARG=\"$2\"; MSG_FAIL=\"$3\"; MSG_DONE=\"$4\"; "
             "if command -v pkexec >/dev/null 2>&1; then "
-            "    pkexec $cmd; "
+            "    pkexec \"$CORE\" \"$ARG\"; "
             "elif command -v doas >/dev/null 2>&1 && [ -f /etc/doas.conf ]; then "
-            "    doas $cmd; "
+            "    doas \"$CORE\" \"$ARG\"; "
             "elif command -v sudo >/dev/null 2>&1 && [ -f /etc/sudoers ]; then "
-            "    sudo $cmd; "
-            "else echo '%2'; sleep 5; exit 1; fi; "
-            "echo \"%3\"; read dummy"
-        ).arg(arg)
-         .arg(tr("No escalador de privilegios configurado"))
-         .arg(tr("Presiona Enter para cerrar..."));
+            "    sudo \"$CORE\" \"$ARG\"; "
+            "else "
+            "    printf '%s\\n' \"$MSG_FAIL\"; sleep 5; exit 1; "
+            "fi; "
+            "printf '%s\\n' \"$MSG_DONE\"; read -r _";
 
-        launchInTerminal(script, arg);
+        QStringList bashArgs = {
+            "-c",
+            QString::fromUtf8(script),
+            "neko-worker",
+            core,
+            arg,
+            tr("No escalador de privilegios configurado"),
+            tr("Presiona Enter para cerrar...")
+        };
+
+        launchBashInTerminal(bashArgs, arg);
     }
 
     void checkUpdates() {
@@ -200,14 +310,21 @@ private slots:
         isWorking = true;
         updateStatus();
 
-        // La comprobación de actualizaciones no requiere privilegios de root,
-        // así que no se usa sudo/doas/pkexec y no se pide clave.
-        QString script = QString(
-            "/usr/bin/neko-updater-core; "
-            "echo \"%1\"; read dummy"
-        ).arg(tr("Comprobación finalizada. Presiona Enter para cerrar..."));
+        QString core = findCoreBinary();
+        static const char *script =
+            "\"$1\"; "
+            "printf '%s\\n' \"$2\"; "
+            "read -r _";
 
-        launchInTerminal(script, "");
+        QStringList bashArgs = {
+            "-c",
+            QString::fromUtf8(script),
+            "neko-worker",
+            core,
+            tr("Comprobación finalizada. Presiona Enter para cerrar...")
+        };
+
+        launchBashInTerminal(bashArgs, "");
     }
 
     void applyUpdates() {
@@ -222,13 +339,16 @@ private slots:
         QMessageBox about;
         about.setWindowTitle(tr("Acerca de Neko Void Updater"));
         QString logoPath = "/usr/share/neko-void/logo.png";
+        if (!QFile::exists(logoPath)) {
+            logoPath = "neko-updater-core/Data/logo.png";
+        }
         if (QFile::exists(logoPath)) {
             about.setIconPixmap(QPixmap(logoPath));
         }
         about.setTextFormat(Qt::RichText);
         about.setText(
             "<h3>Neko Void Updater</h3>"
-            "<p><b>" + tr("Versión") + ":</b> 5.0.0</p>"
+            "<p><b>" + tr("Versión") + ":</b> 5.1.0</p>"
             "<p><b>" + tr("Gestor de actualizaciones para Void Linux") + "</b></p>"
             "<p>" + tr("Motor de actualizaciones XBPS y Flatpak con integración en la bandeja del sistema, "
             "actualizaciones automáticas y herramientas de mantenimiento.") + "</p>"
@@ -241,17 +361,63 @@ private slots:
     void setFrequency(const QString &freq) {
         QString configDir = QDir::homePath() + "/.config/NekoVoid";
         QDir().mkpath(configDir);
-        QFile file(configDir + "/Updater.conf");
-        QString content = "[General]\nfrequency=" + freq + "\n";
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            QTextStream out(&file);
-            out << content;
-            file.close();
+        QString confPath = configDir + "/Updater.conf";
+
+        QStringList lines;
+        bool found = false;
+        QFile fileIn(confPath);
+        if (fileIn.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&fileIn);
+            while (!in.atEnd()) {
+                QString line = in.readLine();
+                if (line.trimmed().startsWith("frequency=")) {
+                    lines.append("frequency=" + freq);
+                    found = true;
+                } else {
+                    lines.append(line);
+                }
+            }
+            fileIn.close();
+        } else {
+            lines.append("[General]");
+        }
+        if (!found) {
+            lines.append("frequency=" + freq);
+        }
+
+        QFile fileOut(confPath);
+        if (fileOut.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QTextStream out(&fileOut);
+            out << lines.join("\n") << "\n";
+            fileOut.close();
+            fileOut.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther);
         }
         updateStatus();
     }
 
 private:
+    void loadIcons() {
+        QString iconPath = "/usr/share/neko-void/";
+        if (!QFile::exists(iconPath + "normal.png")) {
+            iconPath = QApplication::applicationDirPath() + "/../neko-updater-core/Data/";
+            if (!QFile::exists(iconPath + "normal.png")) {
+                iconPath = "neko-updater-core/Data/";
+            }
+        }
+        auto loadOptimizedIcon = [](const QString &file) -> QIcon {
+            QPixmap p(file);
+            if (!p.isNull()) {
+                // Escalar a tamaño nativo de bandeja (32x32) para no retener buffers de 256x256 en RAM
+                return QIcon(p.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+            return QIcon(file);
+        };
+
+        normalIcon = loadOptimizedIcon(iconPath + "normal.png");
+        warningIcon = loadOptimizedIcon(iconPath + "warnig.png");
+        workingIcon = loadOptimizedIcon(iconPath + "working.png");
+    }
+
     void createActions() {
         statusAction = new QAction(tr("Estado"), this);
         statusAction->setEnabled(false);
@@ -288,10 +454,8 @@ private:
         trayMenu->addAction(cleanAction);
         trayMenu->addSeparator();
         
-        freqMenu = new QMenu(tr("Frecuencia"));
-        QString style = "QMenu { background-color: #282a36; color: #f8f8f2; border: 1px solid #44475a; }"
-                        "QMenu::item:selected { background-color: #50fa7b; color: #282a36; }";
-        freqMenu->setStyleSheet(style);
+        // Hereda el estilo del menú padre (evita compilar y almacenar CSS duplicado en memoria)
+        freqMenu = new QMenu(tr("Frecuencia"), trayMenu);
         
         f12h = freqMenu->addAction(tr("Cada 12 horas"));
         f12h->setCheckable(true);
@@ -337,14 +501,27 @@ private:
     QAction *f1w;
     QAction *fman;
     QFileSystemWatcher *watcher;
+    QTimer *scheduledTimer;
+#if defined(__GLIBC__)
     QTimer *heapTimer;
+#endif
+    QIcon normalIcon;
+    QIcon warningIcon;
+    QIcon workingIcon;
     bool isWorking;
+    int lastNotifiedCount;
 };
 
 int main(int argc, char *argv[]) {
+    // Evitar cargar módulos pesados de input (fcitx/ibus) y OpenGL en una bandeja sin campos de texto
+    qputenv("QT_IM_MODULE", "none");
+    qputenv("QT_QUICK_BACKEND", "software");
+    qputenv("QSG_RHI_BACKEND", "software");
+
     QApplication app(argc, argv);
     app.setApplicationName("Neko Void Updater");
     app.setQuitOnLastWindowClosed(false);
+    app.setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
 
     // i18n: detect system locale and load matching translation automatically.
     // Supported: English (default), German, Portuguese, Italian, Spanish, Japanese.

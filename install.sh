@@ -6,7 +6,7 @@
 set -e
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Por favor, ejecuta el instalador como root (sudo ./install.sh)"
+  echo "Por favor, ejecuta el instalador como root (doas ./install.sh o sudo ./install.sh)"
   exit 1
 fi
 
@@ -39,6 +39,8 @@ fi
 
 if [ -f "neko-updater-tray/neko-updater-tray" ]; then
     cp -f "neko-updater-tray/neko-updater-tray" "$BIN_DIR/neko-updater-tray"
+elif [ -f "neko-updater-tray/build/neko-updater-tray" ]; then
+    cp -f "neko-updater-tray/build/neko-updater-tray" "$BIN_DIR/neko-updater-tray"
 else
     echo "Aviso: No se encontró el binario del tray compilado. Compílalo con cmake y make primero."
 fi
@@ -70,9 +72,11 @@ cp files/neko-void-updater.desktop "$AUTOSTART_DIR/"
 
 # 7. Instalar servicio Runit
 echo "󰒓 Instalando servicio de sincronización (Runit)..."
-mkdir -p /etc/sv/neko-void-sync
+mkdir -p /etc/sv/neko-void-sync/log
 cp files/neko-void-sync/run /etc/sv/neko-void-sync/run
+cp files/neko-void-sync/log/run /etc/sv/neko-void-sync/log/run
 chmod +x /etc/sv/neko-void-sync/run
+chmod +x /etc/sv/neko-void-sync/log/run
 
 # 8. Actualizar base de datos de iconos
 gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec vlogger -t neko-void-sync 2>/dev/null || logger -t neko-void-sync

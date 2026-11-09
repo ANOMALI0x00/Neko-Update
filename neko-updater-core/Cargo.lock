@@ -148,7 +148,7 @@ checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
 
 [[package]]
 name = "neko-updater-core"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "chrono",
  "fs2",

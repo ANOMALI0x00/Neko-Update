@@ -1,6 +1,6 @@
 # Template file for 'neko-void-updater'
 pkgname=Neko-Update
-version=5.0.0
+version=5.1.0
 revision=1
 hostmakedepends="cargo rust qt6-base qt6-tools-devel make pkg-config cmake"
 makedepends="rust-std qt6-base-devel qt6-declarative-devel"
@@ -55,6 +55,7 @@ do_install() {
     vinstall "files/neko-void-updater.desktop" 644 etc/xdg/autostart
 
     # Runit Service
-    vmkdir etc/sv/neko-void-sync
+    vmkdir etc/sv/neko-void-sync/log
     vinstall "files/neko-void-sync/run" 755 etc/sv/neko-void-sync run
+    vinstall "files/neko-void-sync/log/run" 755 etc/sv/neko-void-sync/log run
 }
