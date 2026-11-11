@@ -1,9 +1,9 @@
 # Template file for 'neko-void-updater'
-pkgname=Neko-Update
-version=5.1.0
+pkgname=neko-void-updater
+version=5.2.0
 revision=1
-hostmakedepends="cargo rust qt6-base qt6-tools-devel make pkg-config cmake"
-makedepends="rust-std qt6-base-devel qt6-declarative-devel"
+hostmakedepends="cargo rust qt6-base qt6-tools cmake make pkg-config"
+makedepends="rust-std qt6-base-devel"
 depends="polkit runit dbus"
 short_desc="Neko Void Updater - Sistema de actualización para Void Linux"
 maintainer="ANOMALI0x00 <ANOMALI0x00@users.noreply.github.com>"
@@ -13,49 +13,48 @@ distfiles="https://github.com/ANOMALI0x00/Neko-Update/archive/refs/tags/${versio
 checksum=90a41b649be4b40c415182e4226d18e9720ffea35bbf46d31a3e48e7f9a5cfa2
 
 do_build() {
-    # Construir core (Rust)
-    cd neko-updater-core
-    cargo build --release
-    cd ..
+	cd neko-updater-core
+	cargo build --release --locked
+	cd ..
 
-    # Construir tray (Qt6)
-    cd neko-updater-tray
-    mkdir -p build
-    cd build
-    cmake ..
-    make
-    cd ../..
+	mkdir -p neko-updater-tray/build
+	cd neko-updater-tray/build
+	cmake ..
+	make ${makejobs}
+	cd ../..
 }
 
 do_install() {
-    # Binarios
-    vbin neko-updater-core/target/release/neko-updater-core
-    vbin neko-updater-tray/build/neko-updater-tray
+	# Binarios
+	vbin neko-updater-core/target/release/neko-updater-core
+	vbin neko-updater-tray/build/neko-updater-tray
 
-    # Datos (iconos, recursos)
-    vmkdir usr/share/neko-void
-    cp -r neko-updater-core/Data/* "${DESTDIR}/usr/share/neko-void/"
-    vinstall neko-updater-core/Data/logo.png 644 usr/share/pixmaps neko-updater.png
+	# Datos (iconos, recursos)
+	vmkdir usr/share/neko-void
+	for img in neko-updater-core/Data/*.png; do
+		vinstall "$img" 644 usr/share/neko-void
+	done
+	vinstall neko-updater-core/Data/logo.png 644 usr/share/pixmaps neko-updater.png
 
-    # Traducciones (.qm)
-    if [ -d neko-updater-tray/build/translations ]; then
-        vmkdir usr/share/neko-void/translations
-        vinstall neko-updater-tray/build/translations/neko_de.qm 644 usr/share/neko-void/translations
-        vinstall neko-updater-tray/build/translations/neko_pt.qm 644 usr/share/neko-void/translations
-        vinstall neko-updater-tray/build/translations/neko_it.qm 644 usr/share/neko-void/translations
-        vinstall neko-updater-tray/build/translations/neko_ja.qm 644 usr/share/neko-void/translations
-    fi
+	# Traducciones (.qm)
+	if [ -d neko-updater-tray/build/translations ]; then
+		vmkdir usr/share/neko-void/translations
+		for qm in neko-updater-tray/build/translations/*.qm; do
+			[ -f "$qm" ] && vinstall "$qm" 644 usr/share/neko-void/translations
+		done
+	fi
 
-    # Política de Polkit
-    vmkdir usr/share/polkit-1/actions
-    vinstall "files/void.pkexec.xbps.policy" 644 usr/share/polkit-1/actions org.neko_void.updater.policy
+	# Política de Polkit
+	vmkdir usr/share/polkit-1/actions
+	vinstall "files/void.pkexec.xbps.policy" 644 usr/share/polkit-1/actions org.neko_void.updater.policy
 
-    vinstall "files/neko-void-updater.desktop" 644 usr/share/applications
-    vmkdir etc/xdg/autostart
-    vinstall "files/neko-void-updater.desktop" 644 etc/xdg/autostart
+	# Lanzadores Desktop y Autostart
+	vinstall "files/neko-void-updater.desktop" 644 usr/share/applications
+	vmkdir etc/xdg/autostart
+	vinstall "files/neko-void-updater.desktop" 644 etc/xdg/autostart
 
-    # Runit Service
-    vmkdir etc/sv/neko-void-sync/log
-    vinstall "files/neko-void-sync/run" 755 etc/sv/neko-void-sync run
-    vinstall "files/neko-void-sync/log/run" 755 etc/sv/neko-void-sync/log run
+	# Servicio Runit
+	vmkdir etc/sv/neko-void-sync/log
+	vinstall "files/neko-void-sync/run" 755 etc/sv/neko-void-sync run
+	vinstall "files/neko-void-sync/log/run" 755 etc/sv/neko-void-sync/log run
 }

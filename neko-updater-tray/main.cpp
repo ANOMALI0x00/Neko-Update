@@ -68,7 +68,7 @@ public:
 private slots:
     void onFileChanged(const QString &path) {
         Q_UNUSED(path);
-        if (!watcher->files().contains("/tmp/neko_updates_count")) {
+        if (!watcher->files().contains("/tmp/neko_updates_count") && QFile::exists("/tmp/neko_updates_count")) {
             watcher->addPath("/tmp/neko_updates_count");
         }
         if (!isWorking) {
@@ -77,12 +77,15 @@ private slots:
     }
 
     QString findCoreBinary() {
-        if (QFile::exists("/usr/bin/neko-updater-core")) {
-            return "/usr/bin/neko-updater-core";
-        }
-        QString local = QApplication::applicationDirPath() + "/../neko-updater-core/target/release/neko-updater-core";
-        if (QFile::exists(local)) {
-            return local;
+        const QStringList candidates = {
+            "/usr/bin/neko-updater-core",
+            QApplication::applicationDirPath() + "/../neko-updater-core/target/release/neko-updater-core",
+            QApplication::applicationDirPath() + "/../../neko-updater-core/target/release/neko-updater-core"
+        };
+        for (const QString &path : candidates) {
+            if (QFile::exists(path)) {
+                return path;
+            }
         }
         return "/usr/bin/neko-updater-core";
     }
@@ -338,22 +341,26 @@ private slots:
     void showAbout() {
         QMessageBox about;
         about.setWindowTitle(tr("Acerca de Neko Void Updater"));
-        QString logoPath = "/usr/share/neko-void/logo.png";
-        if (!QFile::exists(logoPath)) {
-            logoPath = "neko-updater-core/Data/logo.png";
-        }
-        if (QFile::exists(logoPath)) {
-            about.setIconPixmap(QPixmap(logoPath));
+        const QStringList logoCandidates = {
+            "/usr/share/neko-void/logo.png",
+            QApplication::applicationDirPath() + "/../neko-updater-core/Data/logo.png",
+            QApplication::applicationDirPath() + "/../../neko-updater-core/Data/logo.png"
+        };
+        for (const QString &logoPath : logoCandidates) {
+            if (QFile::exists(logoPath)) {
+                about.setIconPixmap(QPixmap(logoPath));
+                break;
+            }
         }
         about.setTextFormat(Qt::RichText);
         about.setText(
             "<h3>Neko Void Updater</h3>"
-            "<p><b>" + tr("Versión") + ":</b> 5.1.0</p>"
+            "<p><b>" + tr("Versión") + ":</b> 5.2.0</p>"
             "<p><b>" + tr("Gestor de actualizaciones para Void Linux") + "</b></p>"
             "<p>" + tr("Motor de actualizaciones XBPS y Flatpak con integración en la bandeja del sistema, "
             "actualizaciones automáticas y herramientas de mantenimiento.") + "</p>"
             "<p><b>" + tr("Repositorio") + ":</b> "
-            "<a href=\"https://github.com/Neko-Void-Linux/Neko-Update\">github.com/Neko-Void-Linux/Neko-Update</a></p>"
+            "<a href=\"https://github.com/ANOMALI0x00/Neko-Update\">github.com/ANOMALI0x00/Neko-Update</a></p>"
         );
         about.exec();
     }
@@ -390,7 +397,7 @@ private slots:
             QTextStream out(&fileOut);
             out << lines.join("\n") << "\n";
             fileOut.close();
-            fileOut.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther);
+            fileOut.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther);
         }
         updateStatus();
     }
@@ -524,9 +531,9 @@ int main(int argc, char *argv[]) {
     app.setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
 
     // i18n: detect system locale and load matching translation automatically.
-    // Supported: English (default), German, Portuguese, Italian, Spanish, Japanese.
+    // Supported: Spanish (default), English, German, Portuguese, Italian, Japanese.
     QString lang = QLocale::system().name().left(2).toLower();
-    QStringList supported = {"de", "pt", "it", "es", "ja"};
+    QStringList supported = {"en", "de", "pt", "it", "ja"};
     QTranslator translator;
     bool loaded = false;
     if (supported.contains(lang)) {

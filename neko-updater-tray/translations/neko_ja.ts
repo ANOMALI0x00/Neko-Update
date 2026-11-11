@@ -115,5 +115,13 @@
         <source>Repositorio</source>
         <translation>リポジトリ</translation>
     </message>
+    <message>
+        <source>Actualizaciones disponibles</source>
+        <translation>利用可能なアップデート</translation>
+    </message>
+    <message>
+        <source>Se encontraron %1 actualizaciones para tu sistema.</source>
+        <translation>システムに %1 件のアップデートが見つかりました。</translation>
+    </message>
 </context>
 </TS>

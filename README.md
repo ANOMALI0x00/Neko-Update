@@ -1,52 +1,81 @@
 # Neko Void Updater
 
-![Status](https://img.shields.io/badge/status-stable-green)
+**Neko Void Updater** is a lightweight, high-performance system update notifier and daemon designed specifically for **Void Linux**. Written in **Rust** and **C++ (Qt 5/6)**, it features native desktop tray integration, configurable background synchronization, and an atomic, lock-protected execution core.
 
-The Definitive Update Manager for Void Linux
+![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)
+![Language](https://img.shields.io/badge/rust-2021-orange.svg)
+![GUI](https://img.shields.io/badge/Qt-5%20%7C%206-green.svg)
 
-Neko Void Updater is a modern, efficient utility designed for Void Linux users who want an update experience similar to distributions like Linux Mint or Fedora, while maintaining the lightweight nature and granular control of Void.
+---
 
-The application is split into two core components:
+## Architecture
 
-**Neko Core (Rust):** A high-performance engine that interfaces directly with xbps and flatpak to manage packages and system maintenance.
+The suite consists of two specialized components:
 
-**Neko Tray (C++/Qt):** A sleek, minimalist system tray application that handles real-time alerts and user interaction.
+* **`neko-updater-core` (Rust):** A high-speed, zero-bloat CLI backend and background daemon. It handles XBPS synchronization (`xbps-install -S`), system updates (`xbps-install -Suy`), Flatpak updates (both `--system` and `--user`), and cache/orphan cleanup safely using file locks (`/run/neko-updater.lock`) and atomic writes.
+* **`neko-updater-tray` (C++ / Qt):** A minimal system tray daemon that monitors available updates and interacts directly via its context menu:
+  * **Supported Package Managers:** XBPS (System) and Flatpak (System & User applications).
+  * **Localization:** Native Spanish with translations for English (`en`), German (`de`), Portuguese (`pt`), Italian (`it`), and Japanese (`ja`) via automatic system locale detection.
 
-## Technical Specifications
-* **Core Language:** Rust.
-* **Interface Language:** C++ with Qt 6.
-* **Supported Package Managers:** XBPS (System) and Flatpak (User applications).
-* **Localization:** Bilingual (English / Spanish) with automatic system locale detection.
+---
 
-## Build Dependencies
-To compile and install Neko Void Updater, you need the following packages installed on your Void Linux system:
+## Build Requirements
 
-* `cargo`
-* `rust`
-* `cmake`
-* `make`
-* `gcc`
-* `qt6-base-devel`
-* `qt6-svg-devel`
-
-## Key Features
-* **Silent Synchronization:** Includes a background daemon that updates repository indexes hourly without interrupting user workflow.
-* **Start to Tray:** Launches directly into the system notification area.
-* **Persistent State:** Tracks and remembers the last update check timestamp.
-* **Deep Maintenance:** Built-in tools to remove orphaned packages and clear the XBPS package cache.
-* **Security Integration:** Native integration with Polkit (pkexec) for operations requiring elevated privileges.
-
-## Post-Installation (Enabling the Daemon)
-By default, Void Linux does not enable new services automatically. To enable the Neko background synchronization daemon, you must link it to the runit service directory:
+Make sure you have the development libraries and compilers installed on your Void Linux system:
 
 ```bash
-sudo ln -s /etc/sv/neko-void-sync /var/service/
+# Toolchain & dependencies (choose qt6-* or qt5-*)
+sudo xbps-install -S rust cargo cmake base-devel qt6-base-devel qt6-tools
 ```
-Once linked, the service will start automatically and run in the background.
+*(Qt 5 with `qt5-devel` and `qt5-tools` is also supported as an automatic CMake fallback.)*
 
-## Usage
-* **Left Click:** Toggles the visibility of the primary control window.
-* **Right Click:** Opens the context menu providing fast access to check frequencies, maintenance tools, and application exit options.
-* **Logging:** Execution logs and runtime diagnostics can be inspected at /tmp/neko_updater.log.
+---
 
-Developed by ANOMALI0x00 for the Neko Void Linux.
+## Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/ANOMALI0x00/Neko-Update.git
+   cd Neko-Update
+   ```
+
+2. **Compile and install:**
+   ```bash
+   make build
+   doas make install
+   ```
+   *(Or use `sudo ./install.sh` directly.)*
+
+3. **Enable the Runit background sync service:**
+   ```bash
+   doas ln -s /etc/sv/neko-void-sync /var/service/
+   ```
+
+---
+
+## Uninstallation
+
+To cleanly stop the Runit service, terminate running instances, and remove all installed binaries and configuration assets:
+
+```bash
+doas ./uninstall.sh
+```
+*(Or `doas make uninstall`.)*
+
+---
+
+## Features
+
+* **Configurable Background Daemon:** Runs as a Runit service (`/etc/sv/neko-void-sync`) with configurable sync intervals (`12h`, `1d`, `3d`, `1w`, or `manual`) via `/etc/neko-void-updater.conf` or the tray menu.
+* **Interactive Tray Controls:**
+  * **Right/Context Click:** Check for updates now, apply updates, change sync interval, clean XBPS/Flatpak cache & orphans, open Void Linux update news, or quit.
+  * **Dynamic Tray Icons:** Visually indicates up-to-date, checking, updating, or pending-updates states.
+* **Privilege Escalation:** Works seamlessly with Polkit (`pkexec`), `doas`, or `sudo`, and detects your desktop terminal automatically.
+
+---
+
+## Credits
+
+* **Author & Maintainer:** [ANOMALI0x00](https://github.com/ANOMALI0x00)
+* **Co-Author:** ErzaGOD19 - Trinity Community
+* **License:** GPL-3.0-or-later

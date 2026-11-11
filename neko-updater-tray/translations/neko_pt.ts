@@ -115,5 +115,13 @@
         <source>Repositorio</source>
         <translation>Repositório</translation>
     </message>
+    <message>
+        <source>Actualizaciones disponibles</source>
+        <translation>Atualizações disponíveis</translation>
+    </message>
+    <message>
+        <source>Se encontraron %1 actualizaciones para tu sistema.</source>
+        <translation>Foram encontradas %1 atualizações para o seu sistema.</translation>
+    </message>
 </context>
 </TS>

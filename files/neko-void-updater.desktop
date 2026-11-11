@@ -1,10 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=Neko Void Updater
-GenericName=Gestor de Actualizaciones
-Comment=Sistema de actualización y mantenimiento para Void Linux
-Exec=neko-updater-tray
+GenericName=System Update Utility
+GenericName[es]=Gestor de Actualizaciones
+Comment=Desktop-agnostic system update tray for Void Linux
+Comment[es]=Sistema de actualización y mantenimiento para Void Linux
+Exec=/usr/bin/neko-updater-tray
 Icon=neko-updater
 Terminal=false
 Categories=System;Utility;Settings;
 StartupNotify=false
+X-GNOME-Autostart-enabled=true

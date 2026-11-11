@@ -1,10 +1,10 @@
 [package]
 name = "neko-updater-core"
-version = "5.1.0"
+version = "5.2.0"
 edition = "2021"
-authors = ["ErzaGOD19 - Trinity Community <https://github.com/ErzaGOD19>"]
+authors = ["ANOMALI0x00 <ANOMALI0x00@users.noreply.github.com>", "ErzaGOD19 - Trinity Community"]
 description = "Daemon core for Neko Void Updater"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 fs2 = "0.4"

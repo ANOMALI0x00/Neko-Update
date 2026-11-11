@@ -1,13 +1,22 @@
 # Build directories
 target/
 neko-updater-core/target/
+neko-updater-tray/build/
+neko-updater-tray/.qt/
+neko-updater-tray/*_autogen/
+neko-updater-tray/cmake_install.cmake
+neko-updater-tray/CMakeCache.txt
+neko-updater-tray/CMakeFiles/
 neko-updater-tray/Makefile
 neko-updater-tray/*.o
 neko-updater-tray/*.moc
 neko-updater-tray/neko-updater-tray
+neko-updater-tray/neko-updater-core
 neko-updater-tray/.qmake.stash
 neko-updater-tray/moc_*
-neko-updater-tray/*.qm
+neko-updater-tray/qrc_qml.cpp
+neko-updater-tray/translations/*.qm
+pkg/
 
 # IDE/Editor files
 .vscode/
@@ -17,5 +26,3 @@ neko-updater-tray/*.qm
 # Binaries and packages
 *.xbps
 *.log
-neko-updater-tray/qrc_qml.cpp
-neko-updater-tray/build/

@@ -1,6 +1,6 @@
 /*
  * Neko Void Updater - Core
- * Copyright (C) 2024 ErzaGOD19 - Trinity Community
+ * Copyright (C) 2024-2026 ANOMALI0x00 & ErzaGOD19 - Neko Void Linux
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,19 +18,113 @@
 
 use fs2::FileExt;
 use std::env;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-const LOCK_PATH: &str = "/tmp/neko_updater.lock";
+const LOCK_PATH: &str = "/run/neko-updater.lock";
+const FALLBACK_LOCK_PATH: &str = "/tmp/neko_updater.lock";
 const COUNT_PATH: &str = "/tmp/neko_updates_count";
 const LOG_PATH: &str = "/tmp/neko_updater.log";
 // O_NOFOLLOW (0o400000 en Linux) para prevenir TOCTOU symlink attacks
 const O_NOFOLLOW: i32 = 0o400000;
+
+fn is_root() -> bool {
+    fs::metadata("/proc/self").map(|m| m.uid() == 0).unwrap_or(false)
+}
+
+fn is_valid_username(user: &str) -> bool {
+    !user.is_empty() && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Resuelve el nombre de usuario a partir de un UID numérico leyendo /etc/passwd.
+fn resolve_username_by_uid(target_uid: u32) -> Option<String> {
+    let content = fs::read_to_string("/etc/passwd").ok()?;
+    let target_str = target_uid.to_string();
+    for line in content.lines() {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _pass = fields.next()?;
+        let uid = fields.next()?;
+        if uid == target_str && is_valid_username(name) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Obtiene el usuario que invocó la elevación vía sudo, doas o pkexec.
+fn get_invoking_username() -> Option<String> {
+    if let Ok(user) = env::var("SUDO_USER").or_else(|_| env::var("DOAS_USER")) {
+        if is_valid_username(&user) && user != "root" {
+            return Some(user);
+        }
+    }
+    if let Ok(uid_str) = env::var("PKEXEC_UID") {
+        if let Ok(uid) = uid_str.trim().parse::<u32>() {
+            if uid != 0 {
+                return resolve_username_by_uid(uid);
+            }
+        }
+    }
+    None
+}
+
+/// Devuelve (usuario, uid, gid) del usuario de escritorio activo para operaciones de contexto de usuario.
+fn get_desktop_user() -> Option<(String, u32, u32)> {
+    if let Some(user) = get_invoking_username() {
+        let home = Path::new("/home").join(&user);
+        if let Ok(meta) = home.symlink_metadata() {
+            if !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() != 0 {
+                return Some((user, meta.uid(), meta.gid()));
+            }
+        }
+    }
+    if is_root() {
+        if let Ok(entries) = fs::read_dir("/home") {
+            let mut fallback: Option<(String, u32, u32)> = None;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !is_valid_username(&name) {
+                    continue;
+                }
+                if let Ok(meta) = entry.path().symlink_metadata() {
+                    if meta.file_type().is_symlink() || !meta.is_dir() || meta.uid() < 1000 {
+                        continue;
+                    }
+                    if entry.path().join(".config/NekoVoid/Updater.conf").exists() {
+                        return Some((name, meta.uid(), meta.gid()));
+                    }
+                    if fallback.is_none() {
+                        fallback = Some((name, meta.uid(), meta.gid()));
+                    }
+                }
+            }
+            return fallback;
+        }
+    }
+    None
+}
+
+fn preserve_desktop_ownership(path: &Path) {
+    if is_root() {
+        if let Some((_, uid, gid)) = get_desktop_user() {
+            let _ = std::os::unix::fs::lchown(path, Some(uid), Some(gid));
+        }
+    }
+}
+
+fn active_lock_path() -> &'static Path {
+    if is_root() || Path::new(LOCK_PATH).exists() {
+        Path::new(LOCK_PATH)
+    } else {
+        Path::new(FALLBACK_LOCK_PATH)
+    }
+}
 
 fn log(msg: &str) {
     let path = Path::new(LOG_PATH);
@@ -48,7 +142,8 @@ fn log(msg: &str) {
         .custom_flags(O_NOFOLLOW)
         .open(path)
     {
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o666));
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o644));
+        preserve_desktop_ownership(path);
         let _ = file.write_all(line.as_bytes());
     }
 }
@@ -113,7 +208,8 @@ fn sync_daemon() -> io::Result<()> {
             match check_updates() {
                 Ok(true) => {
                     log("Sincronización del demonio completada exitosamente.");
-                    let _ = update_config_last_check(now);
+                    let finished_at = chrono::Local::now().timestamp();
+                    let _ = update_config_last_check(finished_at);
                 }
                 Ok(false) => {
                     log("Sincronización pospuesta (sin conexión o gestor ocupado). Reintentando en breve.");
@@ -135,30 +231,21 @@ fn sync_daemon() -> io::Result<()> {
     }
 }
 
-fn get_config_path() -> std::path::PathBuf {
-    // 1. Si corremos bajo sudo/doas, consultar la config del usuario que invocó el comando
-    if let Ok(user) = env::var("SUDO_USER").or_else(|_| env::var("DOAS_USER")) {
+fn get_config_path() -> PathBuf {
+    // 1. Si corremos bajo sudo/doas/pkexec o como demonio root, priorizar config del usuario de escritorio
+    if let Some((user, _, _)) = get_desktop_user() {
         let p = Path::new("/home").join(user).join(".config/NekoVoid/Updater.conf");
-        if p.exists() {
+        if p.exists() || is_root() {
             return p;
         }
     }
-    // 2. Si corremos como usuario de escritorio normal (HOME no root)
+    // 2. Si corremos como usuario de escritorio normal
     let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     let default_path = Path::new(&home).join(".config/NekoVoid/Updater.conf");
     if default_path.exists() || home != "/root" {
         return default_path;
     }
-    // 3. Si corre como demonio del sistema (root), buscar la config del usuario de escritorio
-    if let Ok(entries) = fs::read_dir("/home") {
-        for entry in entries.flatten() {
-            let user_conf = entry.path().join(".config/NekoVoid/Updater.conf");
-            if user_conf.exists() {
-                return user_conf;
-            }
-        }
-    }
-    // 4. Fallback a configuración global del sistema
+    // 3. Fallback a configuración global del sistema
     let system_conf = Path::new("/etc/neko-void/updater.conf");
     if system_conf.exists() {
         return system_conf.to_path_buf();
@@ -224,7 +311,7 @@ fn update_config_last_check(timestamp: i64) -> io::Result<()> {
     let mut content = lines.join("\n");
     content.push('\n');
 
-    // 3. Escribir usando O_NOFOLLOW para garantizar que no se siga ningún symlink creado concurrentemente
+    // 3. Escribir usando O_NOFOLLOW y permisos 0o644 (legible por todos, editable solo por dueño y root)
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -232,14 +319,12 @@ fn update_config_last_check(timestamp: i64) -> io::Result<()> {
         .custom_flags(O_NOFOLLOW)
         .open(&config_path)?;
     file.write_all(content.as_bytes())?;
-    let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o666));
+    let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644));
 
-    // 4. Si somos root y el directorio pertenece a un usuario regular, preservar su ownership usando lchown
+    // 4. Preservar ownership del directorio padre (usuario regular) sin seguir symlinks
     if let Ok(dir_meta) = config_dir.symlink_metadata() {
         if !dir_meta.file_type().is_symlink() {
-            let uid = dir_meta.uid();
-            let gid = dir_meta.gid();
-            let _ = std::os::unix::fs::lchown(&config_path, Some(uid), Some(gid));
+            let _ = std::os::unix::fs::lchown(&config_path, Some(dir_meta.uid()), Some(dir_meta.gid()));
         }
     }
 
@@ -307,7 +392,7 @@ fn check_updates() -> io::Result<bool> {
     }
 
     // Si apply_updates() tiene el lock de actualización en curso, no interferir
-    let lock_path = Path::new(LOCK_PATH);
+    let lock_path = active_lock_path();
     if lock_path.exists() {
         if let Ok(file) = OpenOptions::new().read(true).open(lock_path) {
             if file.try_lock_shared().is_err() {
@@ -329,22 +414,38 @@ fn check_updates() -> io::Result<bool> {
         run_command("xbps-install", &["-Mun"], true)
     });
 
-    // 2. Hilo de consulta Flatpak (sólo lectura de remotos)
+    // 2. Hilo de consulta Flatpak (sólo lectura de remotos, cubriendo contexto root/usuario)
     let flatpak_handle = std::thread::spawn(|| {
         if !Path::new("/usr/bin/flatpak").exists() {
             return (0, String::new());
         }
         let mut count = 0;
         let mut combined = String::new();
-        for scope in &["--system", "--user"] {
-            if let Ok((_, output)) = run_command("flatpak", &["remote-ls", scope, "--updates"], true) {
-                let updates: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
-                if !updates.is_empty() {
-                    count += updates.len();
-                    combined.push_str(&format!("[Flatpak ({})]\n{}\n", scope, output));
-                }
+
+        if let Ok((_, output)) = run_command("flatpak", &["remote-ls", "--system", "--updates"], true) {
+            let updates: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+            if !updates.is_empty() {
+                count += updates.len();
+                combined.push_str(&format!("[Flatpak (--system)]\n{}\n", output));
             }
         }
+
+        let user_res = if is_root() {
+            get_desktop_user().and_then(|(user, _, _)| {
+                run_command("su", &["-", &user, "-c", "flatpak remote-ls --user --updates 2>/dev/null"], true).ok()
+            })
+        } else {
+            run_command("flatpak", &["remote-ls", "--user", "--updates"], true).ok()
+        };
+
+        if let Some((_, output)) = user_res {
+            let updates: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+            if !updates.is_empty() {
+                count += updates.len();
+                combined.push_str(&format!("[Flatpak (--user)]\n{}\n", output));
+            }
+        }
+
         (count, combined)
     });
 
@@ -433,24 +534,21 @@ fn print_update_output(label: &str, output: &str) {
 
 fn write_count_file(count: usize) -> io::Result<()> {
     let path = Path::new(COUNT_PATH);
-    if let Ok(meta) = path.symlink_metadata() {
-        if meta.file_type().is_symlink() {
-            let _ = fs::remove_file(path);
-        }
-    }
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
+    let tmp_path = PathBuf::from(format!("{}.{}.tmp", COUNT_PATH, std::process::id()));
+    let _ = fs::remove_file(&tmp_path);
 
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .custom_flags(O_NOFOLLOW)
-        .open(path)?;
+        .open(&tmp_path)?;
 
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o666));
     writeln!(file, "{}", count)?;
+    drop(file);
+
+    let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o644));
+    preserve_desktop_ownership(&tmp_path);
+    fs::rename(&tmp_path, path)?;
     Ok(())
 }
 
@@ -470,12 +568,12 @@ fn clean_system() -> io::Result<()> {
     }
 
     let mut users_to_clean: Vec<String> = Vec::new();
-    if let Ok(user) = env::var("SUDO_USER").or_else(|_| env::var("DOAS_USER")) {
+    if let Some(user) = get_invoking_username() {
         users_to_clean.push(user);
     } else if let Ok(entries) = fs::read_dir("/home") {
         for entry in entries.flatten() {
-            if let Ok(ft) = entry.file_type() {
-                if ft.is_dir() {
+            if let Ok(meta) = entry.path().symlink_metadata() {
+                if !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() >= 1000 {
                     users_to_clean.push(entry.file_name().to_string_lossy().into_owned());
                 }
             }
@@ -483,12 +581,10 @@ fn clean_system() -> io::Result<()> {
     }
 
     for user in users_to_clean {
-        // Validación estricta del nombre de usuario para prevenir path traversal
-        if user.is_empty() || !user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if !is_valid_username(&user) {
             continue;
         }
 
-        // Si tenemos flatpak instalado, limpiar dependencias de usuario
         if Path::new("/usr/bin/flatpak").exists() {
             let _ = run_command("su", &["-", &user, "-c", "flatpak uninstall --unused -y 2>/dev/null || true"], false);
         }
@@ -513,7 +609,7 @@ fn clean_system() -> io::Result<()> {
 }
 
 fn apply_updates() -> io::Result<()> {
-    let path = Path::new(LOCK_PATH);
+    let path = active_lock_path();
     if let Ok(meta) = path.symlink_metadata() {
         if meta.file_type().is_symlink() {
             let _ = fs::remove_file(path);
@@ -526,7 +622,7 @@ fn apply_updates() -> io::Result<()> {
         .custom_flags(O_NOFOLLOW)
         .open(path)?;
 
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o666));
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o644));
 
     lock_file.try_lock_exclusive().map_err(|_| {
         log("Error: Otro proceso ya tiene el lock de actualización");
@@ -547,17 +643,15 @@ fn apply_updates() -> io::Result<()> {
         log("Aplicando actualizaciones Flatpak del sistema...");
         let _ = run_command("flatpak", &["update", "-y", "--system"], false);
 
-        // Si se invocó con doas/sudo, actualizar también las aplicaciones de usuario
-        if let Ok(user) = env::var("SUDO_USER").or_else(|_| env::var("DOAS_USER")) {
-            if !user.is_empty() && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                log(&format!("Aplicando actualizaciones Flatpak de usuario para {}...", user));
-                let _ = run_command("su", &["-", &user, "-c", "flatpak update -y --user 2>/dev/null || true"], false);
-            }
+        // Si se invocó con sudo/doas/pkexec, actualizar también las aplicaciones de usuario
+        if let Some(user) = get_invoking_username() {
+            log(&format!("Aplicando actualizaciones Flatpak de usuario para {}...", user));
+            let _ = run_command("su", &["-", &user, "-c", "flatpak update -y --user 2>/dev/null || true"], false);
         }
     }
 
     log("Actualización completada exitosamente");
     let _ = write_count_file(0);
-    
+
     Ok(())
 }
